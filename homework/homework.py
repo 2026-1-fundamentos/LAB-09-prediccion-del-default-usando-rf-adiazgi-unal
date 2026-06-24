@@ -92,3 +92,185 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+# flake8: noqa: E501
+import gzip
+import json
+import pickle
+import zipfile
+from pathlib import Path
+
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    balanced_accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+from sklearn.model_selection import GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+# -----------------------------------------------------------------------
+# Rutas
+# -----------------------------------------------------------------------
+INPUT_DIR = Path("files/input")
+MODELS_DIR = Path("files/models")
+OUTPUT_DIR = Path("files/output")
+
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+# -----------------------------------------------------------------------
+# Paso 1: Limpieza de los datasets
+# -----------------------------------------------------------------------
+def load_zip_csv(zip_path: Path) -> pd.DataFrame:
+    """Lee un csv que viene comprimido dentro de un .zip."""
+    with zipfile.ZipFile(zip_path) as z:
+        csv_name = z.namelist()[0]
+        with z.open(csv_name) as f:
+            return pd.read_csv(f)
+
+
+def clean_dataset(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # Renombrar columna objetivo
+    df = df.rename(columns={"default payment next month": "default"})
+
+    # Remover columna ID
+    if "ID" in df.columns:
+        df = df.drop(columns=["ID"])
+
+    # Eliminar registros con informacion no disponible (codificada como 0
+    # en EDUCATION y MARRIAGE en este dataset)
+    df = df.loc[df["MARRIAGE"] != 0]
+    df = df.loc[df["EDUCATION"] != 0]
+
+    # Eliminar filas con NA explícitos, si existieran
+    df = df.dropna()
+
+    # Agrupar EDUCATION > 4 en la categoria "others" (4)
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: 4 if x > 4 else x)
+
+    return df
+
+
+train_df = clean_dataset(load_zip_csv(INPUT_DIR / "train_data.csv.zip"))
+test_df = clean_dataset(load_zip_csv(INPUT_DIR / "test_data.csv.zip"))
+
+
+# -----------------------------------------------------------------------
+# Paso 2: Dividir en x_train, y_train, x_test, y_test
+# -----------------------------------------------------------------------
+x_train = train_df.drop(columns=["default"])
+y_train = train_df["default"]
+
+x_test = test_df.drop(columns=["default"])
+y_test = test_df["default"]
+
+
+# -----------------------------------------------------------------------
+# Paso 3: Pipeline (one-hot-encoding + random forest)
+# -----------------------------------------------------------------------
+categorical_features = ["SEX", "EDUCATION", "MARRIAGE"]
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        (
+            "cat",
+            OneHotEncoder(handle_unknown="ignore"),
+            categorical_features,
+        ),
+    ],
+    remainder="passthrough",
+)
+
+pipeline = Pipeline(
+    steps=[
+        ("preprocessor", preprocessor),
+        ("classifier", RandomForestClassifier(random_state=42)),
+    ]
+)
+
+
+# -----------------------------------------------------------------------
+# Paso 4: Optimizacion de hiperparametros con validacion cruzada
+# -----------------------------------------------------------------------
+param_grid = {
+    "classifier__n_estimators": [50, 100, 200],
+    "classifier__max_depth": [None, 5, 10, 20],
+    "classifier__min_samples_split": [2, 5, 10],
+}
+
+model = GridSearchCV(
+    estimator=pipeline,
+    param_grid=param_grid,
+    cv=10,
+    scoring="balanced_accuracy",
+    n_jobs=-1,
+    refit=True,
+)
+
+model.fit(x_train, y_train)
+
+
+# -----------------------------------------------------------------------
+# Paso 5: Guardar el modelo comprimido con gzip
+# -----------------------------------------------------------------------
+with gzip.open(MODELS_DIR / "model.pkl.gz", "wb") as f:
+    pickle.dump(model, f)
+
+
+# -----------------------------------------------------------------------
+# Paso 6: Metricas de precision, precision balanceada, recall y f1-score
+# -----------------------------------------------------------------------
+def compute_metrics(dataset_name: str, y_true, y_pred) -> dict:
+    return {
+        "dataset": dataset_name,
+        "precision": precision_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "recall": recall_score(y_true, y_pred),
+        "f1_score": f1_score(y_true, y_pred),
+    }
+
+
+y_train_pred = model.predict(x_train)
+y_test_pred = model.predict(x_test)
+
+train_metrics = compute_metrics("train", y_train, y_train_pred)
+test_metrics = compute_metrics("test", y_test, y_test_pred)
+
+
+# -----------------------------------------------------------------------
+# Paso 7: Matrices de confusion
+# -----------------------------------------------------------------------
+def compute_cm_matrix(dataset_name: str, y_true, y_pred) -> dict:
+    cm = confusion_matrix(y_true, y_pred)
+    return {
+        "type": "cm_matrix",
+        "dataset": dataset_name,
+        "true_0": {
+            "predicted_0": int(cm[0][0]),
+            "predicted_1": int(cm[0][1]),
+        },
+        "true_1": {
+            "predicted_0": int(cm[1][0]),
+            "predicted_1": int(cm[1][1]),
+        },
+    }
+
+
+train_cm = compute_cm_matrix("train", y_train, y_train_pred)
+test_cm = compute_cm_matrix("test", y_test, y_test_pred)
+
+
+# -----------------------------------------------------------------------
+# Guardar metrics.json (una linea JSON por diccionario)
+# -----------------------------------------------------------------------
+with open(OUTPUT_DIR / "metrics.json", "w") as f:
+    for record in [train_metrics, test_metrics, train_cm, test_cm]:
+        f.write(json.dumps(record) + "\n")
