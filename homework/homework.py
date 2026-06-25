@@ -126,6 +126,7 @@ def load_and_clean(path):
     df = pd.read_csv(path)
 
     # Renombrar columna objetivo
+    
     df = df.rename(columns={"default payment next month": "default"})
 
     # Remover columna ID
