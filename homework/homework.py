@@ -93,6 +93,7 @@
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
 # flake8: noqa: E501
+# flake8: noqa: E501
 import gzip
 import json
 import os
@@ -186,9 +187,10 @@ pipeline = Pipeline(
 # ---------------------------------------------------------------------------
 
 param_grid = {
-    "classifier__n_estimators":      [100, 200],
-    "classifier__max_depth":         [None, 10, 20],
-    "classifier__min_samples_split": [2, 5],
+    "classifier__n_estimators":      [50, 100, 200],
+    "classifier__max_depth":         [None, 5, 10, 20],
+    "classifier__min_samples_split": [2, 5, 10],
+    "classifier__class_weight":      [None, "balanced"],
 }
 
 cv = GridSearchCV(
